@@ -18,7 +18,9 @@ env:
 jobs:
   ios:
     name: Build unsigned iOS IPA
-    runs-on: macos-latest
+    # macos-latest（arm64 新镜像）容量不足时 job 排队 15 分钟拿不到跑机就失败。
+    # 钉死 macos-15（arm64，Xcode 16.x）换一个跑机池重试。
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
