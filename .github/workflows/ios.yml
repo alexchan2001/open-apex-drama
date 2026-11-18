@@ -1,0 +1,107 @@
+# 仅在 fork 中构建未签名 iOS IPA（artifact，不发 Release）。
+# 手动触发：Actions -> Build iOS IPA (unsigned) -> Run workflow。
+# 使用与 release.yml / ci.yml 相同的 Flutter 版本（3.47.9）。
+# 产物：ApexDrama-<版本>_ios_unsigned.ipa（未签名，需 AltStore / SideStore 自签安装）
+
+name: Build iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.47.9'
+  APP_VERSION: '1.5.1'
+
+jobs:
+  ios:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # 仓库里没有 ios/Podfile（插件需要 CocoaPods 集成时必须有）。
+      # 若缺失则生成一份 Flutter 标准 Podfile（与工程 deployment target 15.0 一致）。
+      - name: Ensure ios/Podfile exists
+        run: |
+          if [ -f ios/Podfile ]; then
+            echo "ios/Podfile already exists"
+            exit 0
+          fi
+          cat > ios/Podfile <<'PODFILE'
+          # Uncomment this line to define a global platform for your project
+          platform :ios, '15.0'
+
+          # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+          ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          project 'Runner', {
+            'Debug' => :debug,
+            'Profile' => :release,
+            'Release' => :release,
+          }
+
+          def flutter_root
+            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+            unless File.exist?(generated_xcode_build_settings_path)
+              raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+            end
+
+            File.foreach(generated_xcode_build_settings_path) do |line|
+              matches = line.match(/FLUTTER_ROOT=(.*)/)
+              return matches[1].strip if matches
+            end
+            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+          end
+
+          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+          flutter_ios_podfile_setup
+
+          target 'Runner' do
+            use_frameworks!
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+            target 'RunnerTests' do
+              inherit! :search_paths
+            end
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+            end
+          end
+          PODFILE
+          echo "ios/Podfile generated"
+
+      - name: Build iOS (release, no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          cd build/ios/iphoneos
+          ls -la Runner.app
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          IPA_NAME="ApexDrama-${{ env.APP_VERSION }}_ios_unsigned.ipa"
+          ditto -c -k --sequesterRsrc --keepParent Payload "$IPA_NAME"
+          ls -lh "$IPA_NAME"
+          unzip -l "$IPA_NAME" | head -20
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          mv "$IPA_NAME" "$GITHUB_WORKSPACE/out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: out/*.ipa
+          if-no-files-found: error
